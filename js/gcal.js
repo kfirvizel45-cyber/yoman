@@ -5,6 +5,7 @@ import { lessonBlocks } from "./school.js";
 
 const API = "https://www.googleapis.com/calendar/v3";
 const SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const DEFAULT_CLIENT_ID = "962327801626-dhm6kdu4dhpps2e99eo6f1ae8b4q42e4.apps.googleusercontent.com";
 export const HOLIDAY_CAL = "iw.jewish#holiday@group.v.calendar.google.com";
 const TZ = (()=>{ try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Jerusalem"; }catch{ return "Asia/Jerusalem"; } })();
 
@@ -14,7 +15,7 @@ export const redirectUri = () => location.origin + location.pathname;
 
 /* ---------------- auth ---------------- */
 export const auth = {
-  clientId(){ return settings.get("clientId", ""); },
+  clientId(){ return settings.get("clientId", "") || DEFAULT_CLIENT_ID; },
   token(){ const t = settings.get("token", null); return t && t.exp > Date.now() ? t.access : null; },
   hadToken(){ return !!settings.get("token", null); },
   /** Call once at startup. Returns "ok" | "error:<code>" | null */
