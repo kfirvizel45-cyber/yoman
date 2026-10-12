@@ -959,5 +959,5 @@ setInterval(()=>{ if(!document.hidden && S.view==="day") renderDay(); }, 60000);
   // deep link from a Siri shortcut: ?add=<spoken text>
   const q = new URLSearchParams(location.search).get("add");
   if(q){ history.replaceState(null, "", location.pathname); openComposer({ prefill: q.trim()+" " }); }
-  if("serviceWorker" in navigator && location.protocol==="https:" && !window.YOMAN_PREVIEW){ navigator.serviceWorker.register("sw.js").catch(()=>{}); }
+  if("serviceWorker" in navigator && location.protocol==="https:" && !window.YOMAN_PREVIEW){ navigator.serviceWorker.register("sw.js").catch(()=>{}); let reloaded=false; navigator.serviceWorker.addEventListener("controllerchange", ()=>{ if(reloaded) return; reloaded=true; if($("sheet").hidden) location.reload(); }); }
 })();
