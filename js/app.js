@@ -1,6 +1,7 @@
 import { parse, ymd, toMin, fromMin, SUBTYPES } from "./parser.js";
 import { plan, freeBlocks, DEFAULT_PREFS } from "./scheduler.js";
-import { SUBJ, lessonBlocks, schoolStart, schoolEnd } from "./school.js";
+import { SUBJ, lessonBlocks, schoolStart, schoolEnd, GUSH, CLUSTERS } from "./school.js";
+import { readPdf, parseSheet, classify, normKey } from "./examsheet.js";
 import { auth, backend, demo, HOLIDAY_CAL, CalError, redirectUri, TZ } from "./gcal.js";
 import { settings, notes as noteStore, photos as photoStore } from "./store.js";
 import { VACATIONS, vacationOn, vacationDays, isSchoolDay, findBridges, upcomingVacations } from "./vacations.js";
@@ -430,6 +431,95 @@ async function toggleDone(m){
     toast(m.done?"הוחזר לפתוחות":"סומן כהושלם. כל הכבוד!");
     S.tasks = null; await loadTasks(); refresh();
   }catch(e){ toast(errText(e)); }
+}
+
+/* ================= exam-schedule import ================= */
+async function importSheet(file){
+  const lbl = $("impBtn").querySelector("span"); lbl.textContent = "קורא את הלוח…";
+  try{
+    if(cal.mode==="google" && !cal.ready()){ toast("צריך להתחבר ליומן גוגל קודם"); return; }
+    const parsed = parseSheet(await readPdf(file));
+    if(!parsed.entries.length){ toast("לא הצלחתי לזהות לוח מבחנים בקובץ הזה"); return; }
+    const now = new Date();
+    const existing = await cal.list(midnight(now), addDays(now,400), { privateProp:"scSrc=sheet" });
+    openImport(parsed, existing);
+  }catch(e){ toast(e instanceof CalError ? errText(e) : "לא הצלחתי לקרוא את הקובץ. צריך חיבור לאינטרנט וקובץ PDF"); }
+  finally{ lbl.textContent = "העלה לוח מבחנים (PDF)"; }
+}
+/* What changed between the sheet and what an earlier import already put in the calendar. */
+function sheetDiff(parsed, col, existing){
+  const todayK = ymd(new Date());
+  const skip = new Set(settings.get("sheetSkip", []));
+  const fresh = parsed.entries.filter(e=>e.col===col && e.date >= todayK).map(e=>({ ...e, key: normKey(e.raw), ...classify(e.raw, { gush:GUSH, clusters:CLUSTERS }) }));
+  const old = existing.map(ev=>({ ev, key: priv(ev).scKey, date: ymd(evStart(ev)) }));
+  const adds = [], moves = [], dels = []; let same = 0;
+  for(const key of new Set([...fresh.map(f=>f.key), ...old.map(o=>o.key)])){
+    const f = fresh.filter(x=>x.key===key), o = old.filter(x=>x.key===key);
+    const A = f.filter(x=>!o.some(y=>y.date===x.date)), R = o.filter(y=>!f.some(x=>x.date===y.date));
+    same += f.length - A.length;
+    const n = Math.min(A.length, R.length);          // the same item on another date = it moved
+    for(let i=0;i<n;i++) moves.push({ ...A[i], from:R[i].date, ev:R[i].ev });
+    A.slice(n).forEach(x=>adds.push({ ...x, on: x.kind==="exam" && x.mine && !skip.has(x.key) }));
+    R.slice(n).forEach(y=>dels.push(y));
+  }
+  const byDate = (a,b)=>a.date.localeCompare(b.date);
+  return { adds: adds.sort(byDate), moves: moves.sort(byDate), dels: dels.sort(byDate), same };
+}
+function openImport(parsed, existing){
+  let col = Math.min(settings.get("sheetCol", 0), parsed.columns.length-1), diff = null;
+  const dtxt = k => { const d = parseYmd(k); return `${DAYS_S[d.getDay()]} ${d.getDate()}.${d.getMonth()+1}`; };
+  const TAG = { bagrut:"בגרות", test:"מבחן", quiz:"בוחן", project:"עבודה" };
+  const row = (cls, id, on, date, title, sub) => `<label class="ir ${cls}"><input type="checkbox" data-id="${id}" ${on?"checked":""}><span class="id num">${esc(dtxt(date))}</span><span class="it"><b>${esc(title)}</b>${sub?`<small>${esc(sub)}</small>`:""}</span></label>`;
+  openSheet(`<div class="sh-bar"><button class="ib" type="button" data-close aria-label="סגור">${I.x}</button><span class="grow"></span><button type="button" class="save" id="impGo" disabled>עדכן יומן</button></div>
+    <div class="imp-body" id="impBody"></div>`, { full:true });
+  const count = ()=>{ const n = $("impBody").querySelectorAll("input:checked").length; const b = $("impGo"); b.disabled = !n; b.textContent = n ? `עדכן יומן (${n})` : "עדכן יומן"; };
+  const draw = ()=>{
+    diff = sheetDiff(parsed, col, existing);
+    const main = diff.adds.filter(a=>a.kind==="exam" && a.mine), rest = diff.adds.filter(a=>!(a.kind==="exam" && a.mine));
+    const addRow = a => row(a.kind==="exam" ? (a.subtype==="bagrut"?"exam bagrut":"exam") : "", "a"+diff.adds.indexOf(a), a.on, a.date, a.title, a.kind==="exam" ? TAG[a.subtype] : "");
+    $("impBody").innerHTML = `<h3>לוח מבחנים</h3>
+      <p>סמן מה להכניס ליומן. מה שתוריד מהסימון לא יסומן גם בפעם הבאה.</p>
+      ${parsed.columns.length>1?`<div class="cols">${parsed.columns.map((c,i)=>`<button type="button" class="qc${i===col?" on":""}" data-col="${i}">${esc(c)}</button>`).join("")}</div>`:""}
+      ${diff.moves.length?`<div class="imp-h">זזו לתאריך אחר</div>${diff.moves.map((m,i)=>row("exam","m"+i,true,m.date,m.title,`היה ב${dtxt(m.from)}`)).join("")}`:""}
+      ${diff.dels.length?`<div class="imp-h">כבר לא בלוח (יימחקו מהיומן)</div>${diff.dels.map((d,i)=>row("del","d"+i,true,d.date,d.ev.summary,"")).join("")}`:""}
+      ${main.length?`<div class="imp-h">${existing.length?"חדשים":"המבחנים והעבודות שלך"}</div>${main.map(addRow).join("")}`:""}
+      ${!diff.moves.length && !diff.dels.length && !main.length?`<div class="empty"><b>אין שינויים</b>היומן כבר מעודכן לפי הלוח הזה</div>`:""}
+      ${diff.same?`<p style="margin-top:14px">${diff.same} כבר ביומן, בלי שינוי.</p>`:""}
+      ${rest.length?`<details class="imp-more"><summary>עוד ${rest.length} דברים בלוח (סיורים, הרצאות, קבוצות אחרות)</summary>${rest.map(addRow).join("")}</details>`:""}`;
+    $("impBody").querySelectorAll("[data-col]").forEach(b=>b.onclick=()=>{ col = +b.dataset.col; settings.set("sheetCol", col); draw(); });
+    $("impBody").querySelectorAll("input").forEach(i=>i.onchange = count);
+    count();
+  };
+  draw();
+  $("impGo").onclick = async()=>{
+    const btn = $("impGo"); const on = id => $("impBody").querySelector(`[data-id="${id}"]`)?.checked;
+    const adds = diff.adds.filter((a,i)=>on("a"+i)), moves = diff.moves.filter((m,i)=>on("m"+i)), dels = diff.dels.filter((d,i)=>on("d"+i));
+    const skip = new Set(settings.get("sheetSkip", []));
+    diff.adds.forEach((a,i)=>{ if(on("a"+i)) skip.delete(a.key); else if(a.kind==="exam" && a.mine) skip.add(a.key); });
+    settings.set("sheetSkip", [...skip]);
+    const total = adds.length + moves.length + dels.length; let done = 0; btn.disabled = true;
+    const tick = ()=>{ btn.textContent = `מעדכן… ${++done}/${total}`; };
+    try{
+      const now = new Date();
+      for(const a of adds){
+        const target = parseYmd(a.date), exam = a.kind==="exam", st = SUBTYPES.find(x=>x.key===a.subtype);
+        const rem = [minutesBefore(target,3,"18:00"), minutesBefore(target,1,"18:00")].filter(m=> target - m*60000 > now);
+        await cal.insert({ summary:a.title, ...(exam?{ colorId:"11" }:{}), ...timeFields(a.date, null, null), reminders: remindersFor(exam ? rem : rem.slice(-1)),
+          description:`מתוך לוח המבחנים: ${a.raw}\n\nנוצר ביומן החכם`,
+          extendedProperties:{ private:{ sc:"1", scKind: exam?"due":"event", scSrc:"sheet", scKey:a.key, ...(exam?{ scTask:"s"+Date.now().toString(36)+done, scSubtype:a.subtype, scSubject:a.subject||"", scPrep:String(st?.sessions||1), scMin:String(st?.minutes||60), scWin:String(st?.window||3) }:{}) } } });
+        tick();
+      }
+      for(const m of moves){ await cal.patch(m.ev.id, timeFields(m.date, null, null)); tick(); }
+      for(const d of dels){
+        const t = priv(d.ev).scTask;
+        if(t) for(const s of (S.tasks?.prep||[]).filter(x=>priv(x).scTask===t)) await cal.remove(s.id);
+        await cal.remove(d.ev.id); tick();
+      }
+      closeSheet();
+      toast([adds.length&&`נוספו ${adds.length}`, moves.length&&`הוזזו ${moves.length}`, dels.length&&`נמחקו ${dels.length}`].filter(Boolean).join(" · "));
+      S.tasks = null; await loadTasks(); refresh();
+    }catch(e){ toast(`נעצר באמצע (${done}/${total}). ` + errText(e)); btn.disabled = false; btn.textContent = "נסה שוב"; S.tasks = null; loadTasks(); refresh(); }
+  };
 }
 
 /* ================= vacations view ================= */
@@ -953,6 +1043,7 @@ function setView(v){
 /* ================= wiring ================= */
 document.querySelectorAll("#tabs button").forEach(b=>b.onclick = ()=>{ if(b.dataset.view==="day") S.sel = midnight(new Date()); setView(b.dataset.view); });
 $("setBtn").onclick = ()=>setView("settings");
+$("impFile").onchange = e=>{ const f = e.target.files[0]; e.target.value = ""; if(f) importSheet(f); };
 $("backBtn").onclick = ()=>{ S.month = new Date(S.sel.getFullYear(), S.sel.getMonth(), 1); setView("month"); };
 $("ttlBtn").onclick = ()=>{ if(S.view!=="month" && S.view!=="day") return; const m = $("months"); m.hidden = !m.hidden; $("ttlBtn").classList.toggle("open", !m.hidden); renderMonths(); if(S.view==="month") renderMonth(); };
 $("todayBtn").onclick = ()=>{ S.sel = midnight(new Date()); S.month = new Date(S.sel.getFullYear(), S.sel.getMonth(), 1); setView(S.view); };
