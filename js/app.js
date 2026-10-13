@@ -586,7 +586,7 @@ function openComposer({ prefill="" } = {}){
   openSheet(`
     <div class="sh-bar"><button class="ib" type="button" data-close aria-label="סגור">${I.x}</button><span class="grow"></span><button type="button" class="save" id="addBtn" disabled>שמור</button></div>
     <div class="cmp-body">
-      <textarea class="nl" id="cmpIn" rows="1" placeholder="מה יש לך?" enterkeyhint="done" autocomplete="off"></textarea>
+      <textarea class="nl" id="cmpIn" rows="1" placeholder="כתוב כאן במילים שלך…" enterkeyhint="done" autocomplete="off"></textarea>
       <div class="echo" id="echo"></div>
       <div class="qchips" id="qch"></div>
       <div id="pv"></div>
@@ -598,7 +598,9 @@ function openComposer({ prefill="" } = {}){
   inp.addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); if(!$("addBtn").disabled) $("addBtn").click(); } });
   document.querySelectorAll("#exs .ex").forEach(b=>b.onclick=()=>{ inp.value = b.textContent; overrides={}; autosize(inp); updateDraft(); });
   $("addBtn").onclick = commitDraft;
-  setTimeout(()=>{ inp.focus(); const n = inp.value.length; inp.setSelectionRange(n,n); }, 80);
+  // focus right away, inside the tap: the iPhone only opens the keyboard when focus comes straight from a touch
+  const foc = ()=>{ inp.focus(); const n = inp.value.length; inp.setSelectionRange(n,n); };
+  foc(); setTimeout(()=>{ if(document.activeElement!==inp) foc(); }, 80);
   autosize(inp);
   busyCache = null;
   const now = new Date();
