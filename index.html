@@ -4,26 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>יומן חכם</title>
-<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#131314" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0E0F1A">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="יומן חכם">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&family=Karantina:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
 <div id="app">
   <header class="bar" id="bar">
-    <button class="ib" id="menuBtn" type="button" aria-label="תפריט"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <button class="ib back" id="backBtn" type="button" aria-label="חזרה לחודש" hidden><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
     <button class="ttl" id="ttlBtn" type="button"><span id="ttl">אוקטובר</span><svg class="caret" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5"/></svg></button>
     <span class="grow"></span>
     <span class="demo" id="demoPill" hidden>הדגמה</span>
     <button class="ib todayic" id="todayBtn" type="button" aria-label="היום"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 9.5h16M8.5 3v4M15.5 3v4"/></svg><b id="todayNum"></b></button>
+    <button class="ib" id="setBtn" type="button" aria-label="הגדרות"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg></button>
   </header>
   <div class="months" id="months" hidden></div>
   <div class="banner" id="banner" hidden></div>
@@ -36,12 +38,13 @@
     </section>
 
     <section id="view-day" class="view" hidden>
-      <div class="dtop" id="dtop">
-        <div class="dweek" id="dweek"></div>
-        <div class="dsum" id="dsum"></div>
-        <div class="dall" id="dall"></div>
-      </div>
-      <div class="hours" id="hours"></div>
+      <div class="dhead" id="dhead"></div>
+      <div class="dweek" id="dweek"></div>
+      <div class="dcards" id="dcards"></div>
+      <h3 class="h" id="dlistH"></h3>
+      <div class="dlist" id="dlist"></div>
+      <h3 class="h" id="dsoonH" hidden>מתקרב</h3>
+      <div class="soon" id="dsoon"></div>
     </section>
 
     <section id="view-tasks" class="view" hidden>
@@ -54,20 +57,17 @@
 
     <section id="view-settings" class="view" hidden></section>
   </main>
-
-  <button class="fab" id="fab" type="button" aria-label="הוספה"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
 </div>
 
-<div class="scrim" id="drawerScrim" hidden></div>
-<nav class="drawer" id="drawer" hidden>
-  <div class="dr-h">יומן חכם</div>
-  <button type="button" class="dr-i" data-view="day"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 9.5h16M12 13.5h.01"/></svg>יום</button>
-  <button type="button" class="dr-i" data-view="month"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 9.5h16M9.3 9.5V20M14.7 9.5V20M4 14.7h16"/></svg>חודש</button>
-  <button type="button" class="dr-i" data-view="tasks"><svg viewBox="0 0 24 24"><path d="M9 7h11M9 12h11M9 17h11M4.5 7l1 1 2-2M4.5 12l1 1 2-2M4.5 17l1 1 2-2"/></svg><span>מבחנים ומשימות</span><i class="badge" id="tasksBadge" hidden></i></button>
-  <button type="button" class="dr-i" data-view="vac"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg><span>חופשות וגשרים</span></button>
-  <div class="dr-sep"></div>
-  <button type="button" class="dr-i" data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg>הגדרות</button>
-</nav>
+<div class="dock" id="dock"><div>
+  <button class="say" id="fab" type="button" aria-label="הוספה"><span>מה יש לך? כתוב או הכתב</span><i>+</i></button>
+  <nav class="tabs" id="tabs">
+    <button type="button" data-view="day">היום</button>
+    <button type="button" data-view="month">חודש</button>
+    <button type="button" data-view="tasks">מבחנים<i class="badge" id="tasksBadge" hidden></i></button>
+    <button type="button" data-view="vac">חופשות</button>
+  </nav>
+</div></div>
 
 <div class="scrim" id="scrim" hidden></div>
 <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true"></div>

@@ -1,4 +1,4 @@
-import { parse, ymd, toMin, fromMin } from "./parser.js";
+import { parse, ymd, toMin, fromMin, SUBTYPES } from "./parser.js";
 import { plan, freeBlocks, DEFAULT_PREFS } from "./scheduler.js";
 import { SUBJ, lessonBlocks, schoolStart, schoolEnd } from "./school.js";
 import { auth, backend, demo, HOLIDAY_CAL, CalError, redirectUri, TZ } from "./gcal.js";
@@ -43,7 +43,7 @@ const I = {
 /* ================= state ================= */
 const today0 = midnight(new Date());
 const S = {
-  view: "month",
+  view: "day",
   sel: today0,
   month: new Date(today0.getFullYear(), today0.getMonth(), 1),
   weeks: new Map(), loading: new Set(),
@@ -59,18 +59,23 @@ const evEnd = ev => ev.end?.dateTime ? new Date(ev.end.dateTime) : ev.end?.date 
 const isAllDay = ev => !ev.start?.dateTime;
 const isSchool = ev => (ev.summary||"").trim()==="בית ספר";
 
-/* Google Calendar event colours */
+/* Event categories and colours. Categories use CSS variables from app.css; Google's own colours only for events the user coloured there. */
 const GC = {"1":"#7986CB","2":"#33B679","3":"#8E24AA","4":"#E67C73","5":"#F6BF26","6":"#F4511E","7":"#039BE5","8":"#616161","9":"#3F51B5","10":"#0B8043","11":"#D50000"};
-const LIGHT = new Set(["#F6BF26","#33B679"]);
-const DEFAULT_C = "#039BE5", HOLI_C = "#2E8B7E";
-function evColor(ev){
+const LIGHT = new Set(["#F6BF26","#33B679","#E67C73","#7986CB"]);
+const isBday = ev => /יום הולדת|יומולדת|יומהולדת/.test(ev?.summary||"");
+function catOf(ev){
   const k = kindOf(ev);
-  if(k==="due") return GC["11"]; if(k==="prep") return GC["5"];
-  if(ev._holiday) return HOLI_C;
-  if(k==="vac") return GC["2"];
-  return GC[ev.colorId] || (isSchool(ev) ? GC["3"] : DEFAULT_C);
+  if(k==="due") return priv(ev).scSubtype==="bagrut" || /בגרות|מתכונת/.test(ev.summary||"") ? "bagrut" : "exam";
+  if(k==="prep") return "prep";
+  if(ev._holiday || k==="vac") return "free";
+  if(isBday(ev)) return "bday";
+  if(isSchool(ev)) return "school";
+  return "other";
 }
-const darkText = c => LIGHT.has(c);
+const CAT_C = { exam:"var(--exam)", bagrut:"var(--bagrut)", prep:"var(--primary)", free:"var(--vac-ink)", bday:"var(--bday)", school:"var(--school)" };
+function evColor(ev){ return CAT_C[catOf(ev)] || GC[ev.colorId] || "var(--other)"; }
+const darkText = c => c.startsWith("var(") || LIGHT.has(c);
+const ttlOf = ev => (isBday(ev) ? "🎂 " : "") + (ev.summary || "(ללא כותרת)");
 
 /* ================= vacations ================= */
 const OFF_DAYS = (()=>{ const s = new Set(); for(const v of VACATIONS){ for(let d = parseYmd(v.from); ymd(d) <= v.to; d = addDays(d,1)) s.add(ymd(d)); } return s; })();
@@ -152,6 +157,7 @@ async function loadTasks(){
       cal.list(addDays(now,-60), addDays(now,180), { privateProp:"scKind=prep" }),
     ]);
     S.tasks = { due, prep };
+    S.soon = (await cal.list(midnight(now), addDays(now,45))).filter(isBday);
   }catch(e){ S.tasks = S.tasks || { due:[], prep:[] }; }
   renderBadge(); if(S.view==="tasks") renderTasks(); if(S.view==="vac") renderVac(); else scheduleRender();
 }
@@ -162,18 +168,19 @@ async function loadNotesIdx(){
 
 /* ================= header ================= */
 function renderBar(){
-  const v = S.view;
-  $("menuBtn").hidden = v==="day";
-  $("backBtn").hidden = v!=="day";
-  const ref = v==="day" ? S.sel : S.month;
+  const v = S.view, cal2 = v==="month"||v==="day", onToday = ymd(S.sel)===ymd(new Date());
+  $("backBtn").hidden = !(v==="day" && !onToday);
+  const ref = S.month;
   let t = v==="tasks" ? "מבחנים ומשימות" : v==="settings" ? "הגדרות" : v==="vac" ? "חופשות וגשרים" : MONTHS[ref.getMonth()];
-  if((v==="month"||v==="day") && ref.getFullYear()!==new Date().getFullYear()) t += " " + ref.getFullYear();
+  if(v==="month" && ref.getFullYear()!==new Date().getFullYear()) t += " " + ref.getFullYear();
   $("ttl").textContent = t;
-  $("ttlBtn").querySelector(".caret").style.display = (v==="month"||v==="day") ? "" : "none";
+  $("ttlBtn").hidden = v==="day";
+  $("ttlBtn").querySelector(".caret").style.display = v==="month" ? "" : "none";
   $("todayNum").textContent = new Date().getDate();
-  $("todayBtn").hidden = !(v==="month"||v==="day");
-  $("fab").hidden = !(v==="month"||v==="day"||v==="tasks");
-  document.querySelectorAll(".dr-i").forEach(b=>b.classList.toggle("on", b.dataset.view===v));
+  $("todayBtn").hidden = !(v==="month" || (v==="day" && !onToday));
+  $("fab").hidden = !(cal2||v==="tasks");
+  const tab = v==="day" ? (onToday ? "day" : "month") : v;
+  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.view===tab));
 }
 function renderMonths(){
   const m = $("months"); if(m.hidden) return;
@@ -195,9 +202,9 @@ function renderMonth(){
   const g = gridStart(S.month);
   // rows: 5 or 6 depending on month
   const last = new Date(S.month.getFullYear(), S.month.getMonth()+1, 0);
-  const rows = Math.ceil((addDays(last,1) - g)/864e5/7);
-  const avail = window.innerHeight - $("bar").offsetHeight - 34 - (S.err?52:0);
-  const rowh = Math.max(84, Math.floor(avail/rows));
+  const rows = Math.ceil(Math.round((addDays(last,1) - g)/864e5)/7); // round: the clock change adds an hour
+  const avail = window.innerHeight - $("bar").offsetHeight - 34 - $("dock").offsetHeight - $("nextvac").offsetHeight - (S.err?52:0);
+  const rowh = Math.max(72, Math.floor(avail/rows));
   const grid = $("mgrid"); grid.style.setProperty("--rowh", rowh+"px");
   const maxChips = Math.max(1, Math.floor((rowh - 30)/18));
   const dueDone = new Set((S.tasks?.due||[]).filter(e=>priv(e).scDone==="1").map(e=>e.id));
@@ -209,7 +216,7 @@ function renderMonth(){
     const evs = all.filter(e=>!isSchool(e));
     const show = evs.length > maxChips ? maxChips-1 : evs.length;
     let chips = (sch ? `<span class="sbar" style="--c:${evColor(sch)}" title="בית ספר"></span>` : `<span class="sbar none"></span>`) + evs.slice(0,show).map(ev=>{ const c = evColor(ev);
-      return `<span class="chip${darkText(c)?" dark":""}${dueDone.has(ev.id)?" done":""}" style="--c:${c}">${esc(ev.summary||"")}</span>`; }).join("");
+      return `<span class="chip k-${catOf(ev)}${darkText(c)?" dark":""}${dueDone.has(ev.id)?" done":""}" style="--c:${c}">${esc(ttlOf(ev))}</span>`; }).join("");
     if(evs.length > show) chips += `<span class="more">+${evs.length-show}</span>`;
     const vac = vacationOn(k), br = !vac && bridgeFor(k).length;
     if(vac && (k===vac.from || d.getDay()===0)) chips = `<span class="vlbl">${esc(vac.name)}</span>` + chips;
@@ -232,110 +239,135 @@ function renderNextVac(){
 const sameMonth = (a,b) => a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth();
 
 /* ================= day view ================= */
-const HH = 56; // px per hour
+const sesDone = (s, now = new Date()) => priv(s).scDone==="1" || evEnd(s) < now;
+const nDays = n => n===0 ? "היום" : n===1 ? "מחר" : `${n} ימים`;
 function renderDayTop(){
   const ws = weekStart(S.sel), todayK = ymd(new Date()), selK = ymd(S.sel);
   let h = "";
-  for(let i=0;i<7;i++){ const d = addDays(ws,i), k = ymd(d); const evs = eventsOn(d);
-    const has = evs && evs.some(e=>!isSchool(e));
-    h += `<button type="button" class="dw${k===todayK?" today":""}${k===selK?" sel":""}${OFF_DAYS.has(k)?" vac":""}" data-d="${k}"><span>${DAYS_S[i]}</span><b class="num">${d.getDate()}</b><i class="${has?"":"x"}"></i></button>`; }
+  for(let i=0;i<7;i++){ const d = addDays(ws,i), k = ymd(d);
+    const cats = new Set([...holidaysOn(d), ...(eventsOn(d)||[])].map(catOf));
+    let marks = "";
+    if(cats.has("bagrut")) marks += `<u style="--c:var(--bagrut)"></u>`;
+    if(cats.has("exam")) marks += `<u style="--c:var(--exam)"></u>`;
+    if(cats.has("prep")) marks += `<u style="--c:var(--primary)"></u>`;
+    if(cats.has("other")) marks += `<u style="--c:var(--ink2)"></u>`;
+    if(cats.has("bday")) marks += "🎂";
+    h += `<button type="button" class="dw${k===todayK?" today":""}${k===selK?" sel":""}${k<todayK?" past":""}${OFF_DAYS.has(k)?" vac":""}" data-d="${k}" aria-label="${esc(pretty(d))}"><span>${DAYS_S[i]}</span><b class="num">${d.getDate()}</b><i>${marks}</i></button>`; }
   $("dweek").innerHTML = h;
   $("dweek").querySelectorAll(".dw").forEach(b=>b.onclick=()=>{ S.sel = parseYmd(b.dataset.d); renderView(); loadVisible(); });
 }
-function layoutCols(items){
-  // items: {s,e} minutes; assign columns for overlaps (Google-style side by side)
-  const sorted = [...items].sort((a,b)=>a.s-b.s || b.e-a.e);
-  let cluster = [], clusterEnd = -1, out = [];
-  const flush = () => { const cols = []; cluster.forEach(it=>{ let c = cols.findIndex(end=>end<=it.s); if(c<0){ c = cols.length; cols.push(0); } cols[c] = it.e; it.col = c; });
-    cluster.forEach(it=>it.ncol = cols.length); out.push(...cluster); cluster = []; };
-  for(const it of sorted){ if(it.s >= clusterEnd && cluster.length) flush(); cluster.push(it); clusterEnd = Math.max(clusterEnd, it.e); }
-  if(cluster.length) flush();
-  return out;
+/* The big card: on today, the next open test or task; on any other day, the one that falls on it. */
+function heroCard(day, now){
+  const d0 = midnight(day), isToday = ymd(day)===ymd(now);
+  const open = (S.tasks?.due||[]).filter(e=>priv(e).scDone!=="1").sort((a,b)=>evStart(a)-evStart(b));
+  const next = isToday ? open.find(e=>evEnd(e) > now) : open.find(e=>ymd(evStart(e))===ymd(d0));
+  if(!next) return null;
+  const m = taskModel(next), n = Math.round((midnight(m.due)-midnight(now))/864e5);
+  const st = SUBTYPES.find(x=>x.key===m.subtype);
+  const title = m.subject && SUBJ[m.subject] ? (SUBJ[m.subject].short||SUBJ[m.subject].n) : next.summary;
+  const done = m.sessions.filter(s=>sesDone(s, now)).length;
+  const el = document.createElement("button"); el.type = "button"; el.className = `hero ${catOf(next)}`; el.dataset.id = next.id;
+  el.innerHTML = `<div class="row"><div class="hx"><span class="tag">${esc(st?.label||"משימה")}</span><h2>${esc(title)}</h2>
+      <div class="when num">${esc(n===0?"היום":n===1?"מחר":"יום "+DAYS[m.due.getDay()]+" "+dm(ymd(m.due)))}${m.allDay?"":` · <bdi dir="ltr">${hm(m.due)}</bdi>`}</div></div>
+    ${n>0?`<div class="count num">${n}<small>${n===1?"יום":"ימים"}</small></div>`:n===0?`<div class="count num">!<small>היום</small></div>`:""}</div>
+    ${m.sessions.length?`<div class="steps">${m.sessions.map(s=>`<span class="${sesDone(s,now)?"done":""}"></span>`).join("")}<em>למדת ${done} מתוך ${m.sessions.length}</em></div>`:""}`;
+  el.onclick = ()=>openEvent(next);
+  return el;
+}
+/* The yellow card: one study session that sits on this day. */
+function studyCard(ev, isToday){
+  const p = priv(ev), s = evStart(ev), e = evEnd(ev);
+  const dueEv = (S.tasks?.due||[]).find(d=>priv(d).scTask===p.scTask);
+  const ses = dueEv ? taskModel(dueEv).sessions : [];
+  const idx = ses.findIndex(x=>x.id===ev.id);
+  const why = ((ev.description||"").match(/למה כאן: (.+)/)||[])[1];
+  const el = document.createElement("div"); el.className = "study";
+  el.innerHTML = `<button type="button" class="st-main"><div class="lbl">ללמוד ${isToday?"היום":"ביום הזה"}${idx>=0 && ses.length>1?` · פעם ${idx+1} מתוך ${ses.length}`:""}</div>
+      <h2>${esc((ev.summary||"").replace(/^הכנה:\s*/,""))}</h2><div class="t num">${R(hm(s),hm(e))}</div>
+      ${hasConflict(ev)?`<div class="why"><b>מתנגש עם אירוע אחר</b></div>`:why?`<div class="why">${esc(why)}</div>`:""}</button>
+    <div class="acts"><button type="button" class="btn solid" data-a="done">סיימתי</button><button type="button" class="btn ghost" data-a="move">הזז</button></div>`;
+  el.querySelector(".st-main").onclick = ()=>openEvent(ev);
+  el.querySelector('[data-a="done"]').onclick = async e2=>{ const b = e2.currentTarget; b.disabled = true;
+    try{ await cal.patch(ev.id, { extendedProperties:{ private:{ ...p, scDone:"1" } } }); toast("כל הכבוד!"); S.tasks = null; await loadTasks(); refresh(); }
+    catch(err){ toast(errText(err)); b.disabled = false; } };
+  el.querySelector('[data-a="move"]').onclick = async e2=>{ const b = e2.currentTarget; b.disabled = true; b.textContent = "מחפש…";
+    try{ await moveSession(ev); }catch(err){ toast(errText(err)); }
+    b.disabled = false; b.textContent = "הזז"; };
+  return el;
+}
+function dayRow(ev, day, now){
+  const isToday = ymd(day)===ymd(now), allDay = isAllDay(ev) || ev._holiday, s = evStart(ev), e = evEnd(ev), k = kindOf(ev), n = S.notesIdx[ev.id];
+  const past = !allDay && e < now;
+  let sub = "";
+  if(isSchool(ev)){
+    const bl = lessonBlocks(day.getDay()), nm = now.getHours()*60+now.getMinutes();
+    const live = isToday && bl.find(b=>nm>=toMin(b.start) && nm<toMin(b.end));
+    sub = live ? `עכשיו: ${SUBJ[live.s].short||SUBJ[live.s].n} עד ${live.end}` : [...new Set(bl.map(b=>SUBJ[b.s].short||SUBJ[b.s].n))].join(" · ");
+  } else if(k==="prep"){ sub = priv(ev).scDone==="1" ? "סיימת" : hasConflict(ev) ? "מתנגש עם אירוע אחר" : ""; }
+  else if(k==="due"){ sub = priv(ev).scDone==="1" ? "הושלם" : (SUBTYPES.find(x=>x.key===priv(ev).scSubtype)?.label || ""); }
+  else if(ev._holiday) sub = "חג";
+  let icons = ""; if(n?.text) icons += I.note; if(n?.photos) icons += I.cam;
+  const el = document.createElement("button"); el.type = "button";
+  el.className = `ev k-${catOf(ev)}${past?" past":""}${k==="prep" && priv(ev).scDone!=="1" && !past?" hot":""}`;
+  el.innerHTML = `<div class="tm num">${allDay?"כל<br>היום":`${hm(s)}<br>${hm(e)}`}</div><div class="cb" style="--c:${evColor(ev)}"></div>
+    <div class="tx"><b>${esc(k==="prep" ? ttlOf(ev).replace(/^הכנה:/,"ללמוד:") : ttlOf(ev))}${k==="due" && priv(ev).scDone==="1"?" ✓":""}</b>${sub?`<small>${esc(sub)}</small>`:""}</div>${icons?`<span class="ic">${icons}</span>`:""}`;
+  if(!ev._holiday && ev.id!=="_school") el.onclick = ()=>openEvent(ev);
+  return el;
+}
+function soonCards(now, heroId){
+  const items = [];
+  (S.tasks?.due||[]).filter(e=>priv(e).scDone!=="1" && evEnd(e) > now && e.id!==heroId).forEach(e=>{
+    const m = taskModel(e); items.push({ n: Math.round((midnight(m.due)-midnight(now))/864e5), cat: catOf(e), title: e.summary,
+      sub: m.sessions.length ? (m.sessions.length===1 ? "זמן למידה אחד ביומן" : `${m.sessions.length} זמני למידה ביומן`) : shortDate(m.due), go: ()=>openEvent(e) }); });
+  (S.soon||[]).forEach(e=>{ const d = evStart(e); items.push({ n: Math.round((midnight(d)-midnight(now))/864e5), cat:"bday", wide:true, title: e.summary, sub: `יום ${DAYS[d.getDay()]} ${dm(ymd(d))}`, go: ()=>openEvent(e) }); });
+  const v = upcomingVacations(now, 1)[0];
+  if(v && v.from > ymd(now)) items.push({ n: daysUntil(v.from), cat:"free", title: v.name, sub: "חופש" + (bridges().some(b=>b.vacation===v.name) ? " · יש גשר" : ""), go: ()=>setView("vac") });
+  const top = items.filter(x=>x.n>=0).sort((a,b)=>a.n-b.n).slice(0,5);
+  const small = top.filter(x=>!x.wide); if(small.length%2) small[small.length-1].full = true; // a lone half-width card looks broken
+  return top.map(x=>{
+    const el = document.createElement("button"); el.type = "button"; el.className = `card ${x.cat}${x.wide?" wide":""}${x.full?" full":""}`;
+    const num = x.n<2 ? `<div class="n">${x.n===0?"היום":"מחר"}</div>` : `<div class="n num">${x.n}<small>ימים</small></div>`;
+    el.innerHTML = x.wide ? `<div class="emo">🎂</div><div class="cx"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></div>${num}` : `${num}<b>${esc(x.title)}</b><span>${esc(x.sub)}</span>`;
+    el.onclick = x.go; return el; });
 }
 function renderDay(){
   renderDayTop();
-  const day = S.sel, now = new Date(), isToday = ymd(day)===ymd(now);
-  const evs = eventsOn(day);
-  const holis = holidaysOn(day);
-  const allDay = [...holis, ...(evs||[]).filter(isAllDay)];
+  const day = S.sel, now = new Date(), k = ymd(day), isToday = k===ymd(now);
+  const evs = eventsOn(day), holis = holidaysOn(day);
   const timed = (evs||[]).filter(e=>!isAllDay(e));
-  // summary pills
-  const sum = [];
-  const dueSoon = (S.tasks?.due||[]).filter(e=>priv(e).scDone!=="1" && evStart(e) > addDays(midnight(day),1) && evStart(e) < addDays(midnight(day),8))
-    .sort((a,b)=>evStart(a)-evStart(b)).slice(0,2);
-  dueSoon.forEach(e=>{ const n = Math.round((midnight(evStart(e))-midnight(day))/864e5); sum.push(`<button type="button" class="pill red" data-go="tasks">${esc(e.summary)} · ${n===1?"מחר":"עוד "+n+" ימים"}</button>`); });
-  if(evs){
-    const busy = timed.map(e=>({ start:evStart(e), end:evEnd(e) }));
-    const gaps = freeBlocks(day, busy, { now, from:"08:00", to:"22:00", min:45 });
-    const freeMin = gaps.reduce((a,[x,y])=>a+(y-x),0);
-    if(freeMin) sum.push(`<span class="pill free">${I.free}פנוי ${dur(freeMin)}${isToday?" מעכשיו":""}</span>`);
-  }
-  const vacT = vacationOn(ymd(day)), brT = bridgeFor(ymd(day));
+  // header: the date, and one pill (vacation / bridge / free time)
+  let pill = "";
+  const vacT = vacationOn(k), brT = bridgeFor(k);
   if(vacT){ const i = Math.round((midnight(day)-parseYmd(vacT.from))/864e5)+1, n = vacationDays(vacT);
-    sum.unshift(`<button type="button" class="pill vac" data-go="vac">אין לימודים · ${esc(vacT.name)}${n>1?` (יום ${i} מתוך ${n})`:""}</button>`); }
-  else if(brT.length){ const b = brT[0];
-    sum.unshift(`<button type="button" class="pill bridge" data-go="vac">יום גשר: ${b.total} ימי חופש רצוף אם תוותר על ${b.used===1?"יום אחד":b.used+" ימים"}</button>`); }
-  $("dsum").innerHTML = sum.join("");
-  $("dsum").querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>setView(b.dataset.go));
-  $("dall").innerHTML = allDay.map((ev,i)=>{ const c = evColor(ev); return `<button type="button" class="adc${darkText(c)?" dark":""}" style="--c:${c}" data-i="${i}">${esc(ev.summary)}</button>`; }).join("");
-  $("dall").querySelectorAll(".adc").forEach(b=>b.onclick=()=>{ const ev = allDay[+b.dataset.i]; if(!ev._holiday) openEvent(ev); });
-
-  // hour grid
-  const H = $("hours");
-  let rows = ""; for(let h=0;h<24;h++) rows += `<div class="hr"><span class="num">${pad(h)}:00</span></div>`;
-  H.style.setProperty("--hh", HH+"px");
-  H.innerHTML = rows + `<div class="evs" id="evs"></div>`;
-  const box = $("evs");
-  const dayMs = midnight(day).getTime();
-  const items = timed.map(ev=>{ const s = Math.max(0, (evStart(ev)-dayMs)/60000), e = Math.min(1440, (evEnd(ev)-dayMs)/60000); return { ev, s, e: Math.max(e, s+20) }; });
-  if(!evs && lessonBlocks(day.getDay()).length){ // not loaded yet: show timetable so the screen is useful at once
-    items.push({ ev:{ id:"_school", summary:"בית ספר", colorId:"3", start:{dateTime:at(ymd(day),schoolStart(day.getDay())).toISOString()}, end:{dateTime:at(ymd(day),schoolEnd(day.getDay())).toISOString()} },
-      s: toMin(schoolStart(day.getDay())), e: toMin(schoolEnd(day.getDay())) });
+    pill = `<button type="button" class="hp vac" data-go="vac">אין לימודים · ${esc(vacT.name)}${n>1?` (${i}/${n})`:""}</button>`; }
+  else if(brT.length){ const b = brT[0]; pill = `<button type="button" class="hp bridge" data-go="vac">יום גשר · ${b.total} ימי חופש רצוף</button>`; }
+  else if(evs && k>=ymd(now)){
+    const freeMin = freeBlocks(day, timed.map(e=>({ start:evStart(e), end:evEnd(e) })), { now, from:"08:00", to:"22:00", min:45 }).reduce((a,[x,y])=>a+(y-x),0);
+    if(freeMin) pill = `<span class="hp free">פנוי ${isToday?"היום ":""}${dur(freeMin)}</span>`;
   }
-  layoutCols(items).forEach(it=>{
-    const ev = it.ev, c = evColor(ev), k = kindOf(ev), n = S.notesIdx[ev.id];
-    const el = document.createElement("div"); el.setAttribute("role","button"); el.tabIndex = 0;
-    const school = isSchool(ev);
-    el.className = `ev${darkText(c)?" dark":""}${school?" school":""}${evEnd(ev)<now?" past":""}`;
-    el.style.setProperty("--c", c);
-    el.style.top = (it.s/60*HH + 1) + "px";
-    el.style.height = Math.max(22, (it.e-it.s)/60*HH - 3) + "px";
-    const w = 100/it.ncol; el.style.right = `calc(${w*it.col}% + 0px)`; el.style.width = `calc(${w}% - 3px)`;
-    const s = evStart(ev), e = evEnd(ev); const short = (it.e-it.s) < 45;
-    let icons = "";
-    if(n?.text) icons += I.note; if(n?.photos) icons += I.cam;
-    if(school){
-      let les = "";
-      const st = toMin(hm(s));
-      lessonBlocks(day.getDay()).forEach(b=>{ const top = (toMin(b.start)-st)/60*HH, hgt = (toMin(b.end)-toMin(b.start))/60*HH;
-        const nm = now.getHours()*60+now.getMinutes(); const live = isToday && nm>=toMin(b.start) && nm<toMin(b.end);
-        const t2 = Math.max(top, 22);
-        les += `<div class="les${live?" now":""}" style="top:${t2}px;height:${Math.max(18,hgt-(t2-top))}px"><b>${esc(SUBJ[b.s].n)}</b><small class="num">${b.start} · ${b.from===b.to?"שיעור "+b.from:"שיעורים "+R(b.from,b.to)}</small></div>`; });
-      el.innerHTML = `<div class="sh">בית ספר <span class="num" style="font-weight:400">${R(hm(s),hm(e))}</span><span class="ic">${icons}</span></div>${les}`;
-    } else {
-      const warn = k==="prep" && hasConflict(ev) ? `<span class="warn">התנגשות</span>` : "";
-      const tag = k==="due" ? (priv(ev).scDone==="1" ? " ✓" : "") : "";
-      el.innerHTML = short ? `<div class="et">${esc(ev.summary||"(ללא כותרת)")}${tag}, <span class="num" style="font-weight:400">${hm(s)}</span><span class="ic">${icons}</span>${warn}</div>`
-        : `<div class="et">${esc(ev.summary||"(ללא כותרת)")}${tag}<span class="ic">${icons}</span>${warn}</div><div class="es num">${R(hm(s),hm(e))}</div>`;
-    }
-    el.onclick = e2 => { e2.stopPropagation(); if(ev.id!=="_school") openEvent(ev); };
-    el.onkeydown = e2 => { if(e2.key==="Enter") el.click(); };
-    box.appendChild(el);
-  });
-  if(isToday){ const nl = document.createElement("div"); nl.className="nowline"; nl.style.top = ((now.getHours()*60+now.getMinutes())/60*HH)+"px"; box.appendChild(nl); }
-  // tap empty space -> add at that time
-  box.onclick = e => {
-    const r = box.getBoundingClientRect(); const y = e.clientY - r.top;
-    let m = Math.floor(y/HH*2)*30; m = Math.max(0, Math.min(23*60+30, m));
-    const hint = document.createElement("div"); hint.className="hint"; hint.style.top = (m/60*HH+1)+"px"; hint.style.height = (HH-3)+"px"; hint.textContent = `+ ${fromMin(m)}`; box.appendChild(hint);
-    setTimeout(()=>{ hint.remove(); openComposer({ prefill: `${dayPhrase(day)} ב-${fromMin(m)} ` }); }, 140);
-  };
-}
-function scrollDayToNow(){
-  const now = new Date(), isToday = ymd(S.sel)===ymd(now);
-  const m = isToday ? Math.max(7*60, now.getHours()*60+now.getMinutes()-60) : 7*60+30;
-  const top = $("hours").getBoundingClientRect().top + scrollY - ($("bar").offsetHeight + $("dtop").offsetHeight);
-  window.scrollTo(0, Math.max(0, top + m/60*HH - 8));
+  const r = rel(day);
+  $("dhead").innerHTML = `<div><div class="dow">יום ${DAYS[day.getDay()]}${r && !isToday?" · "+r:""}${day.getFullYear()!==now.getFullYear()?" · "+day.getFullYear():""}</div>
+    <h1><span class="num">${day.getDate()}</span> ב${MONTHS[day.getMonth()]}</h1></div>${pill}`;
+  $("dhead").querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>setView(b.dataset.go));
+
+  // cards
+  const cards = $("dcards"); cards.innerHTML = "";
+  const hero = heroCard(day, now); if(hero) cards.appendChild(hero);
+  if(k>=ymd(now)) timed.filter(e=>kindOf(e)==="prep" && priv(e).scDone!=="1" && evEnd(e) > now).forEach(e=>cards.appendChild(studyCard(e, isToday)));
+
+  // the day's list
+  const list = $("dlist"); list.innerHTML = "";
+  $("dlistH").textContent = isToday ? "היום שלי" : "מה יש ביום הזה";
+  const rows = [...holis, ...(evs||[]).filter(isAllDay), ...timed];
+  if(!evs && lessonBlocks(day.getDay()).length && !OFF_DAYS.has(k)) // not loaded yet: show the timetable so the screen is useful at once
+    rows.push({ id:"_school", summary:"בית ספר", start:{dateTime:at(k,schoolStart(day.getDay())).toISOString()}, end:{dateTime:at(k,schoolEnd(day.getDay())).toISOString()} });
+  rows.forEach(ev=>list.appendChild(dayRow(ev, day, now)));
+  if(!rows.length) list.innerHTML = `<div class="empty">${evs?"<b>יום ריק</b>אין כלום ביומן":"טוען…"}</div>`;
+
+  // what's coming (today only)
+  const soon = $("dsoon"); soon.innerHTML = "";
+  const sc = isToday ? soonCards(now, hero?.dataset.id) : [];
+  sc.forEach(c=>soon.appendChild(c)); $("dsoonH").hidden = !sc.length;
 }
 function hasConflict(ev){
   const evs = eventsOn(evStart(ev)) || []; const s = evStart(ev), e = evEnd(ev);
@@ -369,17 +401,17 @@ function renderTasks(){
 function taskRow(m){
   const now = new Date();
   const days = Math.round((midnight(m.due) - midnight(now))/864e5);
-  const total = m.sessions.length, past = m.sessions.filter(s=>evEnd(s) < now).length;
+  const total = m.sessions.length, past = m.sessions.filter(s=>sesDone(s, now)).length;
   const conflicts = m.sessions.filter(s=>evStart(s)>now && hasConflict(s)).length;
   const subj = m.subject && SUBJ[m.subject] ? ` · ${esc(SUBJ[m.subject].short||SUBJ[m.subject].n)}` : "";
   const el = document.createElement("div"); el.className = `ti${days<=2&&!m.done?" soon":""}${m.done?" done":""}`;
   el.innerHTML = `
     <div class="dd num">${m.done?"<b>✓</b>":days<=0?`<b>${days===0?"היום":"עבר"}</b>`:days===1?"<b>מחר</b>":`<b>${days}</b><span>ימים</span>`}</div>
     <div style="min-width:0">
-      <div class="tt"><i style="--c:${GC["11"]}"></i>${esc(m.ev.summary)}</div>
+      <div class="tt"><i style="--c:${evColor(m.ev)}"></i>${esc(m.ev.summary)}</div>
       <div class="ts num">${esc(pretty(m.due))}${m.allDay?"":" · "+hm(m.due)}${subj}</div>
       ${total?`<div class="prog"><i style="width:${past/total*100}%"></i></div>
-      <div class="ses">${m.sessions.map(s=>`<div class="${evEnd(s)<now?"past":""}"><span class="num">הכנה: ${esc(shortDate(evStart(s)))} · ${R(hm(evStart(s)),hm(evEnd(s)))}</span></div>`).join("")}</div>`:""}
+      <div class="ses">${m.sessions.map(s=>`<div class="${sesDone(s,now)?"past":""}"><span class="num">הכנה: ${esc(shortDate(evStart(s)))} · ${R(hm(evStart(s)),hm(evEnd(s)))}</span></div>`).join("")}</div>`:""}
       ${conflicts?`<div class="warn-l">${conflicts===1?"זמן הכנה אחד מתנגש":conflicts+" זמני הכנה מתנגשים"} עם אירוע אחר</div>`:""}
       <div class="acts">
         <button type="button" class="tb ok" data-a="done">${m.done?"החזר לפתוחות":"סיימתי"}</button>
@@ -714,7 +746,7 @@ async function openEvent(ev){
   openSheet(`
     <div class="grab"></div>
     <div class="sh-bar"><button class="ib" type="button" data-close aria-label="סגור">${I.x}</button><span class="grow"></span>${isApp(ev)?`<button class="ib" type="button" id="delBtn" aria-label="מחק">${I.trash}</button>`:""}</div>
-    <div class="ev-title" style="--c:${c}"><i></i><h3>${esc(ev.summary||"(ללא כותרת)")}</h3></div>
+    <div class="ev-title" style="--c:${c}"><i></i><h3>${esc(ttlOf(ev))}</h3></div>
     <div class="ev-when num">${when}</div>
     ${task && task.sessions.length?`<div class="srow">${I.book}<div class="sc"><div class="sl">זמני הכנה</div>${task.sessions.map(x=>`<div class="num">${esc(shortDate(evStart(x)))} · ${R(hm(evStart(x)),hm(evEnd(x)))}</div>`).join("")}</div></div>`:""}
     ${isSchool(ev)?`<div class="srow">${I.school}<div class="sc"><div class="sl">המערכת</div><div class="les-list">${lessonBlocks(s.getDay()).map(b=>`<div><span class="num">${b.start}</span>${esc(SUBJ[b.s].n)} <span style="min-width:0">${esc(SUBJ[b.s].t)}</span></div>`).join("")}</div></div></div>`:""}
@@ -851,7 +883,7 @@ function renderSettings(){
     <ol><li>פתח את האפליקציה בספארי.</li><li>לחץ על כפתור השיתוף.</li><li>בחר "הוסף למסך הבית".</li></ol>
     <p>ההתראות מגיעות מאפליקציית Google Calendar, אז כדאי שההתראות שלה יהיו פתוחות.</p>
   </div>
-  <div class="foot">יומן חכם · גרסה 2.0 · ההערות והתמונות נשמרות רק בטלפון הזה</div>`;
+  <div class="foot">יומן חכם · גרסה 3.0 · ההערות והתמונות נשמרות רק בטלפון הזה</div>`;
   v.querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{ const t = $(b.dataset.copy).textContent; try{ await navigator.clipboard.writeText(t); toast("הועתק"); }catch{ const r = document.createRange(); r.selectNodeContents($(b.dataset.copy)); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } });
   $("saveCid").onclick = ()=>{ const v2 = $("cid").value.trim();
     if(v2 && !/\.apps\.googleusercontent\.com$/.test(v2)){ toast("זה לא נראה כמו Client ID של גוגל"); return; }
@@ -891,8 +923,6 @@ function closeSheet(){
   sh.addEventListener("touchmove", e=>{ if(y0==null) return; dy = e.touches[0].clientY - y0; if(dy>8){ dragging=true; sh.style.transition="none"; sh.style.transform=`translateY(${dy}px)`; } }, { passive:true });
   sh.addEventListener("touchend", ()=>{ if(y0==null) return; y0=null; sh.style.transition="transform .2s"; if(dragging && dy>110){ sh.style.transform="translateY(100%)"; setTimeout(()=>{ sh.style.transform=""; sh.style.transition=""; closeSheet(); },180); } else sh.style.transform=""; });
 })();
-function openDrawer(){ $("drawer").hidden = false; $("drawerScrim").hidden = false; }
-function closeDrawer(){ $("drawer").hidden = true; $("drawerScrim").hidden = true; }
 let toastTimer = null;
 function toast(msg, { undo } = {}){
   const t = $("toast"); clearTimeout(toastTimer);
@@ -915,19 +945,18 @@ function setView(v){
   if(v==="settings") renderSettings();
   if(v==="vac") renderVac();
   loadVisible();
-  if(v==="day") requestAnimationFrame(scrollDayToNow); else if(prev!==v) window.scrollTo(0,0);
+  if(prev!==v) window.scrollTo(0,0);
 }
 
 /* ================= wiring ================= */
-$("menuBtn").onclick = openDrawer;
-$("drawerScrim").onclick = closeDrawer;
-document.querySelectorAll(".dr-i").forEach(b=>b.onclick = ()=>{ closeDrawer(); if(b.dataset.view==="day" && S.view!=="day"){ S.sel = sameMonth(S.month,new Date()) ? midnight(new Date()) : new Date(S.month); } setView(b.dataset.view); });
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick = ()=>{ if(b.dataset.view==="day") S.sel = midnight(new Date()); setView(b.dataset.view); });
+$("setBtn").onclick = ()=>setView("settings");
 $("backBtn").onclick = ()=>{ S.month = new Date(S.sel.getFullYear(), S.sel.getMonth(), 1); setView("month"); };
 $("ttlBtn").onclick = ()=>{ if(S.view!=="month" && S.view!=="day") return; const m = $("months"); m.hidden = !m.hidden; $("ttlBtn").classList.toggle("open", !m.hidden); renderMonths(); if(S.view==="month") renderMonth(); };
 $("todayBtn").onclick = ()=>{ S.sel = midnight(new Date()); S.month = new Date(S.sel.getFullYear(), S.sel.getMonth(), 1); setView(S.view); };
 $("fab").onclick = ()=>openComposer({ prefill: S.view==="day" && ymd(S.sel)!==ymd(new Date()) ? `${dayPhrase(S.sel)} ` : "" });
 $("scrim").onclick = closeSheet;
-document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ if(!$("lightbox").hidden) $("lightbox").hidden = true; else if(!$("sheet").hidden) closeSheet(); else closeDrawer(); } });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ if(!$("lightbox").hidden) $("lightbox").hidden = true; else if(!$("sheet").hidden) closeSheet(); } });
 function swipe(el, fn){ let x0=null,y0=null;
   el.addEventListener("touchstart", e=>{ x0=e.touches[0].clientX; y0=e.touches[0].clientY; }, { passive:true });
   el.addEventListener("touchend", e=>{ if(x0==null) return; const dx=e.changedTouches[0].clientX-x0, dy=e.changedTouches[0].clientY-y0; x0=null;
@@ -954,7 +983,7 @@ setInterval(()=>{ if(!document.hidden && S.view==="day") renderDay(); }, 60000);
   }
   showBanner();
   await loadNotesIdx();
-  setView("month");
+  setView("day");
   loadTasks();
   // deep link from a Siri shortcut: ?add=<spoken text>
   const q = new URLSearchParams(location.search).get("add");
